@@ -1,0 +1,21 @@
+# Render blueprint — free web service. app.py is at the repo root, so no rootDir.
+# In Render: New + -> Blueprint -> pick this repo, then set the env vars.
+services:
+  - type: web
+    name: branson-parts-api
+    runtime: python
+    plan: free # 512 MB RAM, sleeps after 15 min idle
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 60
+    healthCheckPath: /api/health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: ALLOWED_ORIGIN # e.g. https://your-app.vercel.app
+        sync: false
+      - key: SERPER_API_KEY # optional — enables web verification
+        sync: false
