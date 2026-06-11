@@ -58,3 +58,5 @@ htmlcov/
 # Production
 *.sqlite
 *.db
+embedding_index.pkl
+shopify_crawl_data.json
