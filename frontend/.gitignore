@@ -1,0 +1,45 @@
+# ============================================================
+# SECRETS — never commit these
+# ============================================================
+
+
+# ============================================================
+# Python
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+*.egg-info/
+.pytest_cache/
+
+# Generated / cached data (rebuilt at runtime)
+*.pkl
+embedding_index.pkl
+shopify_crawl_data.json
+
+# ============================================================
+# Node / React (frontend)
+# ============================================================
+node_modules/
+/frontend/node_modules
+/frontend/build
+/build
+/.pnp
+.pnp.js
+/coverage
+
+# ============================================================
+# Misc
+# ============================================================
+.DS_Store
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
