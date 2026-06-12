@@ -564,6 +564,26 @@ Respond ONLY with JSON, no markdown:
 """
 
 
+def _keyword_part_type(query: str) -> str:
+    """Detect part type from query keywords without needing the LLM.
+    Used as fallback when OpenAI is unavailable (quota exceeded, network error).
+    Returns the best matching category name, or empty string if nothing matches."""
+    ql = query.lower()
+    best_name, best_score = "", 0
+    for name, cfg in PART_CATEGORIES.items():
+        score = 0
+        for term in cfg.get("exact", []):
+            if term in ql:
+                score = max(score, 20)
+        for term in cfg.get("related", []):
+            if term in ql:
+                score = max(score, 10)
+        # Longer name = more specific match → prefer it on ties
+        if score > best_score or (score == best_score and score > 0 and len(name) > len(best_name)):
+            best_score, best_name = score, name
+    return best_name
+
+
 def interpret_query_branson(openai_client, query: str) -> Dict[str, Any]:
     fallback = {
         "equipment": query,
@@ -605,10 +625,22 @@ def interpret_query_branson(openai_client, query: str) -> Dict[str, Any]:
         if not isinstance(interp.get("search_terms"), list):
             interp["search_terms"] = query.split()
 
+        # If LLM returned "unknown" for part_type, try keyword detection as backup
+        if _safe_str(interp.get("part_type")).lower() in ("", "unknown"):
+            kw = _keyword_part_type(query)
+            if kw:
+                interp["part_type"] = kw
+                logger.info("keyword part_type fallback: %s", kw)
+
         logger.info("interpretation: %s", json.dumps(interp))
         return interp
     except Exception as e:
         logger.warning("interpret failed: %s", e)
+        # Apply keyword part_type detection so text candidates still get scored
+        kw = _keyword_part_type(query)
+        if kw:
+            fallback["part_type"] = kw
+            logger.info("keyword part_type fallback (no LLM): %s", kw)
         return fallback
 
 
@@ -1309,6 +1341,27 @@ def answer_query(
             part_type,
             user_skus,
         )
+        # Last-resort: if we have text candidates but none scored high enough,
+        # return the top few as low-confidence results rather than a blank response.
+        # This handles the case where OpenAI is unavailable and semantic+LLM both fail.
+        if text_hit_rows:
+            logger.info("returning top text candidates as last-resort fallback")
+            fallback_results = []
+            for p in text_hit_rows[:5]:
+                row = _row(p, "Text match", False, 20)
+                row["match_score"] = 1
+                fallback_results.append(row)
+            for r in fallback_results:
+                r.pop("match_score", None)
+                r.pop("confidence_level", None)
+            return {
+                "query": query,
+                "response": "Here are the closest text matches I found — search quality may be reduced right now.",
+                "results": fallback_results,
+                "search_confidence": 20,
+                "web_search_used": web_used,
+                "interpretation": interpretation,
+            }
         return _no_matches_response(query, interpretation, web_used)
 
     overall = calculate_overall_confidence(
