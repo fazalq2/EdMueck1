@@ -42,6 +42,11 @@ BATCH = 100  # OpenAI embeddings + Supabase upsert batch size
 _TAG = re.compile(r"<[^>]+>")
 
 
+def _norm_sku(sku: str) -> str:
+    """Strip non-alphanumeric chars, lowercase — e.g. 'V218-461-0025' -> 'v2184610025'."""
+    return re.sub(r"[^a-zA-Z0-9]", "", sku or "").lower()
+
+
 def strip_html(s: str) -> str:
     """Body HTML -> plain text, so descriptions stay small in the 500 MB DB."""
     if not s:
@@ -80,6 +85,8 @@ def flatten(products) -> list[dict]:
                     ),
                     # title + tags + type, lower-cased, for model/series/category ilike
                     "search_blob": " ".join([title, " ".join(tags), ptype]).lower(),
+                    # normalized SKU: non-alphanumeric stripped, for fuzzy SKU lookups
+                    "sku_norm": _norm_sku(v.get("sku") or ""),
                 }
             )
     return rows

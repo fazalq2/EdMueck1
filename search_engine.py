@@ -33,7 +33,7 @@ INTERP_MODEL = os.getenv("INTERP_MODEL", "gpt-4o-mini")
 CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-4o-mini")  # grounded reply model
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 STORE_DOMAIN = os.getenv("STORE_DOMAIN", "varnerparts.com")
-SEMANTIC_K = int(os.getenv("SEMANTIC_K", "30"))
+SEMANTIC_K = int(os.getenv("SEMANTIC_K", "50"))
 
 # ---------------------------------------------------------------------------
 # Branson knowledge base
@@ -108,16 +108,7 @@ PART_CATEGORIES = {
     "air filter": {
         "exact": ["air filter", "air cleaner"],
         "related": ["filter element", "air element"],
-        "exclude": [
-            "bracket",
-            "housing",
-            "cover",
-            "o-ring",
-            "seal",
-            "gasket",
-            "hose",
-            "clamp",
-        ],
+        "exclude": ["bracket", "housing", "o-ring", "seal", "gasket", "hose", "clamp"],
     },
     "oil filter": {
         "exact": ["oil filter"],
@@ -135,22 +126,9 @@ PART_CATEGORIES = {
         "exclude": ["bracket", "o-ring", "seal", "gasket"],
     },
     "filter kit": {
-        "exact": [
-            "filter kit",
-            "maintenance kit",
-            "service kit",
-            "filter package",
-            "filter set",
-        ],
+        "exact": ["filter kit", "maintenance kit", "service kit", "filter package", "filter set"],
         "related": ["complete filter"],
-        "exclude": [
-            "bracket",
-            "o-ring",
-            "seal",
-            "gasket",
-            "single filter",
-            "individual filter",
-        ],
+        "exclude": ["bracket", "o-ring", "seal", "gasket"],
     },
     "glow plug": {
         "exact": ["glow plug"],
@@ -176,6 +154,142 @@ PART_CATEGORIES = {
         "exact": ["bolt", "hex bolt", "cap screw"],
         "related": ["fastener", "screw"],
         "exclude": ["nut", "washer"],
+    },
+    # ---- extended categories ----
+    "pump": {
+        "exact": ["pump", "water pump", "fuel pump", "hydraulic pump", "injection pump"],
+        "related": ["feed pump"],
+        "exclude": ["bracket", "o-ring", "seal", "gasket", "hose"],
+    },
+    "valve": {
+        "exact": ["valve", "injection valve", "fuel injection valve", "check valve", "relief valve"],
+        "related": ["nozzle", "injector"],
+        "exclude": ["bracket", "o-ring", "seal", "gasket"],
+    },
+    "seal": {
+        "exact": ["seal", "oil seal", "lip seal"],
+        "related": ["o-ring", "gasket"],
+        "exclude": ["bracket", "housing"],
+    },
+    "gasket": {
+        "exact": ["gasket", "head gasket", "intake gasket", "exhaust gasket"],
+        "related": ["seal", "o-ring"],
+        "exclude": ["bracket"],
+    },
+    "o-ring": {
+        "exact": ["o-ring", "oring"],
+        "related": ["seal"],
+        "exclude": [],
+    },
+    "bearing": {
+        "exact": ["bearing", "ball bearing", "roller bearing", "needle bearing"],
+        "related": ["bushing"],
+        "exclude": ["bracket"],
+    },
+    "bushing": {
+        "exact": ["bushing", "bush"],
+        "related": ["bearing", "sleeve"],
+        "exclude": [],
+    },
+    "starter": {
+        "exact": ["starter", "starter motor"],
+        "related": ["starting motor"],
+        "exclude": ["relay", "switch", "solenoid"],
+    },
+    "alternator": {
+        "exact": ["alternator", "generator"],
+        "related": [],
+        "exclude": ["bracket", "belt"],
+    },
+    "thermostat": {
+        "exact": ["thermostat"],
+        "related": [],
+        "exclude": ["housing", "gasket"],
+    },
+    "water pump": {
+        "exact": ["water pump", "coolant pump"],
+        "related": ["pump"],
+        "exclude": ["bracket", "o-ring", "seal", "gasket", "hose"],
+    },
+    "radiator": {
+        "exact": ["radiator"],
+        "related": ["cooler"],
+        "exclude": ["hose", "bracket", "cap", "clamp"],
+    },
+    "clutch": {
+        "exact": ["clutch", "clutch disc", "clutch plate", "clutch assembly"],
+        "related": [],
+        "exclude": ["cable", "pedal"],
+    },
+    "brake": {
+        "exact": ["brake", "brake pad", "brake disc", "brake drum"],
+        "related": [],
+        "exclude": ["cable", "pedal", "fluid"],
+    },
+    "seat": {
+        "exact": ["seat", "operator seat"],
+        "related": [],
+        "exclude": ["bolt", "bracket"],
+    },
+    "light": {
+        "exact": ["light", "headlight", "work light", "lamp"],
+        "related": [],
+        "exclude": ["bracket", "switch"],
+    },
+    "mirror": {
+        "exact": ["mirror", "rear view mirror"],
+        "related": [],
+        "exclude": ["bracket"],
+    },
+    "tire": {
+        "exact": ["tire", "tyre"],
+        "related": [],
+        "exclude": ["rim", "wheel"],
+    },
+    "nut": {
+        "exact": ["nut", "hex nut", "lock nut", "castle nut"],
+        "related": ["fastener"],
+        "exclude": ["bolt", "washer"],
+    },
+    "washer": {
+        "exact": ["washer", "flat washer", "lock washer"],
+        "related": ["fastener"],
+        "exclude": ["bolt", "nut"],
+    },
+    "pin": {
+        "exact": ["pin", "cotter pin", "roll pin", "dowel pin"],
+        "related": [],
+        "exclude": [],
+    },
+    "switch": {
+        "exact": ["switch", "safety switch", "ignition switch"],
+        "related": [],
+        "exclude": [],
+    },
+    "relay": {
+        "exact": ["relay"],
+        "related": [],
+        "exclude": [],
+    },
+    "injector": {
+        "exact": ["injector", "fuel injector", "injection nozzle"],
+        "related": ["nozzle", "valve"],
+        "exclude": ["bracket", "o-ring", "seal"],
+    },
+    "axle": {
+        "exact": ["axle", "front axle", "rear axle"],
+        "related": ["shaft"],
+        "exclude": ["bearing", "seal"],
+    },
+    "pto": {
+        "exact": ["pto", "power take off", "pto shaft"],
+        "related": ["power take-off"],
+        "exclude": [],
+    },
+    "transmission": {
+        "exact": ["transmission", "gear", "gearbox"],
+        "related": [],
+        "exclude": ["bracket", "seal", "o-ring"],
     },
 }
 
@@ -621,12 +735,18 @@ def validate_part_type_match(
             return (1000, True)
         if any(w in haystack for w in words):
             return (500, True)
+        # No category config and no keyword match — soft pass, let semantic score decide
         return (0, True)
 
     title_type = f"{title} {ptype}"
+
+    # Exclusion check: only hard-reject when an *explicit* exclusion term appears.
+    # Products with cryptic titles (e.g. "EA00000985A") won't have ANY terms,
+    # so we must NOT hard-reject them solely because the title is opaque.
     for ex in config.get("exclude", []):
         if re.search(rf"\b{re.escape(ex)}\b", title_type):
             return (0, False)
+
     for term in config.get("exact", []):
         if term in title_type or term in haystack:
             return (2000, True)
@@ -638,7 +758,10 @@ def validate_part_type_match(
         return (800, True)
     if any(w in haystack for w in words):
         return (500, True)
-    return (0, False)
+
+    # Part type not confirmed in title/haystack, but also not excluded.
+    # Soft pass with low score — semantic similarity will rank it appropriately.
+    return (200, True)
 
 
 def calculate_match_confidence(
@@ -694,6 +817,7 @@ def calculate_overall_confidence(
 
 
 def _exact_sku(supabase, skus: List[str]) -> List[Dict[str, Any]]:
+    """Lookup products by SKU. Tries exact match first, then ilike for normalized match."""
     skus = _dedupe_upper(skus)
     if not skus:
         return []
@@ -706,7 +830,20 @@ def _exact_sku(supabase, skus: List[str]) -> List[Dict[str, Any]]:
                 seen.add(pid)
                 rows.append(p)
 
-    norm_values = list({_norm_code(s) for s in skus if _norm_code(s)})
+    # Exact match: both upper and lower variants (schema index is on upper(sku))
+    variants = list({*skus, *[s.lower() for s in skus], *[s.upper() for s in skus]})
+    try:
+        data = (
+            supabase.table("products").select("*").in_("sku", variants).execute().data
+            or []
+        )
+        add(data)
+    except Exception as e:
+        logger.warning("exact sku lookup failed: %s", e)
+
+    # Normalized lookup via sku_norm column (populated by ingest.py).
+    # Falls back to ilike on existing DBs that haven't run the new ingest yet.
+    norm_values = list({_norm_code(s) for s in skus if len(_norm_code(s)) >= 4})
     if norm_values:
         try:
             data = (
@@ -718,24 +855,25 @@ def _exact_sku(supabase, skus: List[str]) -> List[Dict[str, Any]]:
                 or []
             )
             add(data)
-        except Exception as e:
-            logger.warning(
-                "sku_norm lookup failed; falling back to raw sku. error=%s", e
-            )
+        except Exception:
+            # sku_norm column may not exist yet — use ilike fallback
+            for norm in norm_values:
+                try:
+                    ors = f"sku.ilike.*{norm}*,title.ilike.*{norm}*"
+                    data = (
+                        supabase.table("products")
+                        .select("*")
+                        .or_(ors)
+                        .limit(10)
+                        .execute()
+                        .data
+                        or []
+                    )
+                    add(data)
+                except Exception as e:
+                    logger.warning("normalized sku ilike failed for %s: %s", norm, e)
 
-    variants = list({*skus, *[s.lower() for s in skus], *[s.upper() for s in skus]})
-    try:
-        data = (
-            supabase.table("products").select("*").in_("sku", variants).execute().data
-            or []
-        )
-        add(data)
-    except Exception as e:
-        logger.warning("raw sku lookup failed: %s", e)
-
-    logger.info(
-        "exact sku lookup skus=%s norm=%s rows=%s", skus, norm_values, len(rows)
-    )
+    logger.info("exact sku lookup skus=%s rows=%s", skus, len(rows))
     return rows
 
 
@@ -988,6 +1126,14 @@ def answer_query(
         cleaned = _clean_search_term(term)
         if cleaned and cleaned.lower() not in {"branson", "tractor", "series"}:
             part_terms.append(cleaned)
+    # Also include raw query words (length > 2, not stop words) so we don't miss
+    # anything that the LLM interpretation may have dropped.
+    _stop = {"the", "for", "and", "that", "with", "need", "want", "find", "looking",
+             "branson", "tractor", "part", "parts", "series", "model", "a", "an", "is"}
+    raw_words = [w for w in re.findall(r"[a-zA-Z0-9]{3,}", query) if w.lower() not in _stop]
+    for w in raw_words:
+        if w not in part_terms and w not in model_terms:
+            part_terms.append(w)
 
     text_terms = model_terms + part_terms + user_skus + web_part_numbers
     text_hit_rows = _text_candidates(supabase, text_terms)
@@ -1107,7 +1253,11 @@ def answer_query(
             except Exception:
                 pass
 
-        if score >= 500:
+        # Let strong semantic results through even when other signals are weak.
+        # The semantic score alone (0.72+ sim = 700 pts) clears the threshold.
+        sim_raw = _to_float(p.get("similarity"), 0.0)
+        min_score = 300 if sim_raw >= 0.70 else 500
+        if score >= min_score:
             conf = calculate_match_confidence(
                 score, is_web, is_user, pt_score, model_score
             )

@@ -24,6 +24,7 @@ create table if not exists products (
     product_handle  text,
     product_url     text,
     search_blob     text default '',             -- title + tags + type, for model/series/category ilike
+    sku_norm        text default '',             -- sku with non-alphanumeric stripped, lowercase
     embedding       vector(512),
     updated_at      timestamptz default now()
 );
@@ -31,6 +32,9 @@ create table if not exists products (
 -- Indexes -------------------------------------------------------------------
 -- Fast exact SKU lookups (we always upper() the SKU before comparing).
 create index if not exists products_sku_upper_idx on products (upper(sku));
+
+-- Normalized SKU index for dash/space-insensitive lookups.
+create index if not exists products_sku_norm_idx on products (sku_norm);
 
 -- Fuzzy title search fallback.
 create index if not exists products_title_trgm_idx on products using gin (title gin_trgm_ops);
@@ -58,6 +62,8 @@ returns table (
     type           text,
     description    text,
     product_url    text,
+    product_handle text,
+    search_blob    text,
     similarity     float
 )
 language sql stable
@@ -65,6 +71,7 @@ as $$
     select
         p.id, p.sku, p.title, p.price, p.inventory, p.tags,
         p.weight, p.weight_unit, p.type, p.description, p.product_url,
+        p.product_handle, p.search_blob,
         1 - (p.embedding <=> query_embedding) as similarity
     from products p
     where p.embedding is not null
