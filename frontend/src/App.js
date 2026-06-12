@@ -317,6 +317,11 @@ function SearchResults({ data }) {
 
   return (
     <div className="vp-results">
+      {data.response && (
+        <p className="vp-assistant-text" style={{ margin: "0 0 6px" }}>
+          {data.response}
+        </p>
+      )}
       <div className={`vp-confidence vp-confidence-${tier}`}>
         <span className="vp-confidence-dot" />
         <span className="vp-confidence-label">{tierLabel}</span>
