@@ -1,0 +1,17 @@
+name: keep-alive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Ping backend health endpoint
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+        run: |
+          curl -fsS "${BACKEND_URL%/}/api/health"
