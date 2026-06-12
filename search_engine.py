@@ -2,18 +2,19 @@
 """
 search_engine.py — Branson parts search/answer logic for app.py.
 
-Compatible with:
-    from search_engine import answer_query
-    from search_engine import BRANSON_MODELS
+Optimized version. Changes vs. the previous file:
+  1. Web search now builds a CLEAN structured query ("Branson <model> <part>")
+     and searches the store FIRST (site:varnerparts.com), falling back to the
+     open web only if the store returns nothing. Fixes the "useless article
+     link" problem — sources stay on-product.
+  2. Web verification fires on more queries again (low confidence, series, OR a
+     part-type search with no user SKU) — restores the old behavior without
+     burning Serper on pure SKU lookups.
+  3. Searches now return a conversational `response` string, so the chat talks.
+  4. Stronger semantic weighting so good vector matches aren't filtered out.
 
-Main fixes included:
-  - Normalized SKU lookup: V2184610025 matches V218-461-0025
-  - Removes fake NULL/null SKU searches
-  - Prevents exact model "2100" from becoming fake series prefix "21"
-  - Searches title, description, type, sku, and search_blob
-  - Better model scoring using title/tags/description/search_blob
-  - Safer candidate logging
-  - Keeps same response shape expected by frontend/App.js
+Keeps the same response shape App.js expects, plus the prior improvements
+(sku_norm lookup, literal-model override, broad text search).
 """
 
 import os
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
 EMBED_DIMS = int(os.getenv("EMBED_DIMS", "512"))
 INTERP_MODEL = os.getenv("INTERP_MODEL", "gpt-4o-mini")
+CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-4o-mini")  # grounded reply model
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 STORE_DOMAIN = os.getenv("STORE_DOMAIN", "varnerparts.com")
 SEMANTIC_K = int(os.getenv("SEMANTIC_K", "30"))
@@ -288,13 +290,6 @@ def _safe_str(value: Any) -> str:
 
 
 def _norm_code(value: Any) -> str:
-    """
-    Normalize part/SKU numbers.
-
-    V2184610025      -> v2184610025
-    V218-461-0025   -> v2184610025
-    A04_002         -> a04002
-    """
     value = _safe_str(value)
     if value.upper() in NULLISH:
         return ""
@@ -322,64 +317,31 @@ def _clean_search_term(value: Any) -> str:
 
 
 def _literal_model_from_query(query: str) -> str | None:
-    """
-    Find exact Branson model mentioned by the user.
-
-    This prevents this bad case:
-        query: Branson 2100 glow plug
-        LLM: model=2100, is_series=true
-        old code: prefix=21, search_blob.ilike.*21*
-
-    Now exact 2100 remains exact 2100.
-    """
     q = query.lower()
-
     for model in sorted(BRANSON_MODELS, key=len, reverse=True):
         m = model.lower()
-
         if re.search(rf"\b{re.escape(m)}\b", q):
             return model
-
-        # User may write 2205 while catalogue model is 2205H.
         base = re.sub(r"[a-z]+$", "", m)
         if len(base) >= 4 and re.search(rf"\b{re.escape(base)}\b", q):
             return model
-
     return None
 
 
 def _series_prefix_from_text(value: str) -> str:
-    """
-    Extract series prefix safely.
-
-    Accepts:
-      20 Series -> 20
-      Branson 20 -> 20
-      20 -> 20
-
-    Does not treat exact model 2100 as prefix 21.
-    """
     value = _safe_str(value).lower()
-
-    # Prefer explicit "20 series" style.
     m = re.search(r"\b(20|30|40|50|60|70|80)\s*(series)?\b", value)
     if m:
         return m.group(1)
-
     digits = re.sub(r"\D", "", value)
     if digits in SERIES_MAP:
         return digits
-
     return ""
 
 
 def _product_haystack(product: Dict[str, Any]) -> str:
     tags = product.get("tags") or []
-    if isinstance(tags, list):
-        tags_str = " ".join(str(t) for t in tags)
-    else:
-        tags_str = str(tags)
-
+    tags_str = " ".join(str(t) for t in tags) if isinstance(tags, list) else str(tags)
     parts = [
         product.get("sku"),
         product.get("title"),
@@ -396,23 +358,13 @@ def _product_haystack(product: Dict[str, Any]) -> str:
 def _contains_model(haystack: str, model: str) -> bool:
     if not model:
         return False
-
     m = model.lower()
     base = re.sub(r"[a-z]+$", "", m)
-
-    patterns = [
-        rf"\bbranson\s+{re.escape(m)}\b",
-        rf"\b{re.escape(m)}\b",
-    ]
-
+    patterns = [rf"\bbranson\s+{re.escape(m)}\b", rf"\b{re.escape(m)}\b"]
     if base and base != m and len(base) >= 4:
         patterns.extend(
-            [
-                rf"\bbranson\s+{re.escape(base)}\b",
-                rf"\b{re.escape(base)}\b",
-            ]
+            [rf"\bbranson\s+{re.escape(base)}\b", rf"\b{re.escape(base)}\b"]
         )
-
     return any(re.search(p, haystack) for p in patterns)
 
 
@@ -437,28 +389,21 @@ def _to_int(value: Any, default: int = 0) -> int:
 
 def detect_intent(query: str) -> str:
     ql = query.lower().strip()
-
     if ql in GREETINGS or (any(g in ql for g in GREETINGS) and len(ql.split()) <= 2):
         return "greeting"
-
     if any(re.search(p, query, re.IGNORECASE) for p in SKU_PATTERNS):
         return "search"
-
     for faq_type, data in FAQ_RESPONSES.items():
         if any(k == ql for k in data["keywords"]):
             return f"faq:{faq_type}"
-
         if any(k in ql for k in data["keywords"]) and not any(
             w in ql for w in PART_INDICATORS
         ):
             return f"faq:{faq_type}"
-
     if any(i in ql for i in PART_INDICATORS):
         return "search"
-
     if any(m.lower() in ql for m in BRANSON_MODELS):
         return "search"
-
     return "search"
 
 
@@ -483,10 +428,12 @@ Series:
 "70 Series" = 7845C, 7845R.
 "80 Series" = 8050C, 8050R.
 
-Important:
-- If the user mentions an exact model like 2100, 2400, 2515H, 3725CH, etc., set is_series=false.
+Rules:
+- If the user mentions an exact model like 2100, 2400, 2515H, set is_series=false.
 - Only set is_series=true when the user explicitly asks for a series, like "20 series".
-- Extract part numbers/SKUs anywhere in the query, including codes in parentheses like (V2184610025), (B207).
+- Extract part numbers/SKUs ONLY if they literally appear in the user's message,
+  including codes in parentheses. Never invent or copy example numbers. If none
+  appear, use null and an empty list.
 - Be specific about part_type, e.g. "hex bolt", "glow plug", "canopy", "air filter".
 
 Respond ONLY with JSON, no markdown:
@@ -514,7 +461,6 @@ def interpret_query_branson(openai_client, query: str) -> Dict[str, Any]:
         "confidence": "low",
         "is_series": False,
     }
-
     try:
         resp = openai_client.chat.completions.create(
             model=INTERP_MODEL,
@@ -525,11 +471,9 @@ def interpret_query_branson(openai_client, query: str) -> Dict[str, Any]:
                 {"role": "user", "content": query},
             ],
         )
-
         txt = resp.choices[0].message.content.strip()
         txt = re.sub(r"^```json\s*|\s*```$", "", txt)
         m = re.search(r"\{.*\}", txt, re.DOTALL)
-
         interp = json.loads(m.group()) if m else dict(fallback)
 
         interp.setdefault("model", "")
@@ -542,92 +486,107 @@ def interpret_query_branson(openai_client, query: str) -> Dict[str, Any]:
 
         if _safe_str(interp.get("specific_sku")).upper() in NULLISH:
             interp["specific_sku"] = None
-
         if not isinstance(interp.get("all_part_numbers"), list):
             interp["all_part_numbers"] = []
-
         if not isinstance(interp.get("search_terms"), list):
             interp["search_terms"] = query.split()
 
         logger.info("interpretation: %s", json.dumps(interp))
         return interp
-
     except Exception as e:
         logger.warning("interpret failed: %s", e)
         return fallback
 
 
 # ---------------------------------------------------------------------------
-# Web search
+# Web search (store-first)
 # ---------------------------------------------------------------------------
+
+
+def _serper_call(q: str, num: int) -> List[Dict[str, Any]]:
+    r = requests.post(
+        "https://google.serper.dev/search",
+        headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+        json={"q": q, "num": num},
+        timeout=10,
+    )
+    if r.status_code != 200:
+        logger.warning("Serper status=%s body=%s", r.status_code, r.text[:300])
+        return []
+    out = []
+    for it in r.json().get("organic", [])[:num]:
+        url = it.get("link", "") or ""
+        out.append(
+            {
+                "title": it.get("title", "") or "",
+                "snippet": it.get("snippet", "") or "",
+                "url": url,
+                "is_varner": STORE_DOMAIN.lower() in url.lower(),
+            }
+        )
+    return out
 
 
 def web_search_serper(
     query: str, num: int = 8, prioritize_varner: bool = True
 ) -> List[Dict[str, Any]]:
+    """
+    Store-first search. We query site:varnerparts.com FIRST so sources stay on
+    our products, and only fall back to the open web if the store has nothing.
+    `query` should already be a clean structured string (see _build_web_query).
+    """
     if not SERPER_API_KEY:
         return []
-
-    sq = query
-    if prioritize_varner and "varnerparts" not in query.lower():
-        sq = f"{query} site:{STORE_DOMAIN} OR {query}"
-
     try:
-        r = requests.post(
-            "https://google.serper.dev/search",
-            headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
-            json={"q": sq, "num": num},
-            timeout=10,
+        results: List[Dict[str, Any]] = []
+        if prioritize_varner and "varnerparts" not in query.lower():
+            results = _serper_call(f"{query} site:{STORE_DOMAIN}", num)
+        # Fall back to the open web only when the store returned nothing.
+        if not results:
+            results = _serper_call(query, num)
+        results.sort(key=lambda x: 0 if x["is_varner"] else 1)
+        logger.info(
+            "web search '%s' -> %d results (%d varner)",
+            query,
+            len(results),
+            sum(1 for r in results if r["is_varner"]),
         )
-
-        if r.status_code != 200:
-            logger.warning(
-                "Serper returned status=%s body=%s", r.status_code, r.text[:300]
-            )
-            return []
-
-        out = []
-        for it in r.json().get("organic", [])[:num]:
-            url = it.get("link", "") or ""
-            out.append(
-                {
-                    "title": it.get("title", "") or "",
-                    "snippet": it.get("snippet", "") or "",
-                    "url": url,
-                    "is_varner": STORE_DOMAIN.lower() in url.lower(),
-                }
-            )
-
-        out.sort(key=lambda x: 0 if x["is_varner"] else 1)
-        return out
-
+        return results
     except Exception as e:
         logger.warning("Serper failed: %s", e)
         return []
 
 
+def _build_web_query(
+    model: str, part_type: str, is_series: bool, raw_query: str
+) -> str:
+    """Clean, structured query for Google — NOT the raw conversational text."""
+    terms = []
+    if model:
+        if is_series:
+            base = re.sub(r"\bseries\b", "", model, flags=re.IGNORECASE).strip()
+            terms.append(f"{base} series")
+        else:
+            terms.append(model)
+    if part_type and part_type != "unknown":
+        terms.append(part_type)
+    return ("Branson " + " ".join(terms)).strip() if terms else raw_query
+
+
 def extract_part_numbers_from_web(results: List[Dict[str, Any]]) -> List[str]:
     found = []
-
     for r in results or []:
         text = f"{r.get('title', '')} {r.get('snippet', '')}"
-
         for pat in WEB_PART_PATTERNS:
             for m in re.findall(pat, text, re.IGNORECASE):
-                if isinstance(m, str):
-                    found.append(m)
-                else:
-                    found.append(next((x for x in m if x), ""))
-
+                found.append(m if isinstance(m, str) else next((x for x in m if x), ""))
     return _dedupe_upper(found)
 
 
 def extract_skus(query: str) -> List[str]:
     found = []
-
     for pat in SKU_PATTERNS:
         found.extend(re.findall(pat, query, re.IGNORECASE))
-
     return _dedupe_upper(found)
 
 
@@ -642,11 +601,6 @@ def validate_part_type_match(
     product_type: str,
     product_haystack: str = "",
 ) -> Tuple[int, bool]:
-    """
-    Returns (score, is_valid).
-
-    is_valid=False means hard reject for clearly wrong categories.
-    """
     requested = (requested_type or "").lower().strip()
     title = (product_title or "").lower()
     ptype = (product_type or "").lower()
@@ -656,7 +610,6 @@ def validate_part_type_match(
         return (0, True)
 
     config = None
-
     for name, cfg in PART_CATEGORIES.items():
         if name in requested or any(t in requested for t in cfg.get("exact", [])):
             config = cfg
@@ -664,107 +617,74 @@ def validate_part_type_match(
 
     if not config:
         words = [w for w in requested.split() if len(w) > 1]
-
         if words and all(w in haystack for w in words):
             return (1000, True)
-
         if any(w in haystack for w in words):
             return (500, True)
-
-        # Do not hard reject unknown category too aggressively.
         return (0, True)
 
-    # Exclusions should mainly check title/type, not full description,
-    # because description may contain accessory/related text.
     title_type = f"{title} {ptype}"
-
     for ex in config.get("exclude", []):
         if re.search(rf"\b{re.escape(ex)}\b", title_type):
             return (0, False)
-
     for term in config.get("exact", []):
         if term in title_type or term in haystack:
             return (2000, True)
-
     for term in config.get("related", []):
         if term in title_type or term in haystack:
             return (1200, True)
-
     words = [w for w in requested.split() if len(w) > 1]
     if any(w in title_type for w in words):
         return (800, True)
-
     if any(w in haystack for w in words):
         return (500, True)
-
     return (0, False)
 
 
 def calculate_match_confidence(
-    score: int,
-    has_web: bool,
-    has_user_sku: bool,
-    part_type_score: int,
-    model_score: int,
+    score, has_web, has_user_sku, part_type_score, model_score
 ) -> int:
     c = 0
-
     if has_web:
         c += 40
-
     if has_user_sku:
         c += 30
-
     if part_type_score >= 2000:
         c += 30
     elif part_type_score >= 1200:
         c += 20
     elif part_type_score >= 800:
         c += 10
-
     if model_score >= 1000:
         c += 20
     elif model_score >= 800:
         c += 10
-
     if score >= 5000:
         c += 10
     elif score >= 3000:
         c += 5
-
     return min(c, 100)
 
 
 def calculate_overall_confidence(
-    matches: List[Dict[str, Any]],
-    has_web: bool,
-    has_model: bool,
-    has_part_type: bool,
-    top_score: int,
+    matches, has_web, has_model, has_part_type, top_score
 ) -> int:
     if not matches:
         return 0
-
     c = matches[0].get("confidence_level", 0)
-
     if c < 60:
         c = max(c - 10, 30)
-
     if has_web:
         c = min(c + 10, 100)
-
     if has_model and has_part_type:
         c = min(c + 5, 100)
-
     if (
         len(matches) >= 2
         and (matches[0]["match_score"] - matches[1]["match_score"]) < 500
     ):
         c = max(c - 15, 40)
-
     if top_score < 2000:
         c = max(c - 10, 30)
-
     return max(min(c, 100), 0)
 
 
@@ -774,22 +694,9 @@ def calculate_overall_confidence(
 
 
 def _exact_sku(supabase, skus: List[str]) -> List[Dict[str, Any]]:
-    """
-    Robust SKU lookup.
-
-    Uses sku_norm if your DB has it. Falls back to raw sku lookup if not.
-
-    Recommended SQL:
-        alter table products add column if not exists sku_norm text;
-        update products
-        set sku_norm = lower(regexp_replace(coalesce(sku, ''), '[^a-zA-Z0-9]', '', 'g'));
-        create index if not exists products_sku_norm_idx on products (sku_norm);
-    """
     skus = _dedupe_upper(skus)
-
     if not skus:
         return []
-
     rows, seen = [], set()
 
     def add(found):
@@ -800,8 +707,6 @@ def _exact_sku(supabase, skus: List[str]) -> List[Dict[str, Any]]:
                 rows.append(p)
 
     norm_values = list({_norm_code(s) for s in skus if _norm_code(s)})
-
-    # Best path: sku_norm.
     if norm_values:
         try:
             data = (
@@ -814,20 +719,11 @@ def _exact_sku(supabase, skus: List[str]) -> List[Dict[str, Any]]:
             )
             add(data)
         except Exception as e:
-            # This allows your app to keep working even before sku_norm exists.
             logger.warning(
                 "sku_norm lookup failed; falling back to raw sku. error=%s", e
             )
 
-    # Fallback: exact sku variants.
-    variants = list(
-        {
-            *skus,
-            *[s.lower() for s in skus],
-            *[s.upper() for s in skus],
-        }
-    )
-
+    variants = list({*skus, *[s.lower() for s in skus], *[s.upper() for s in skus]})
     try:
         data = (
             supabase.table("products").select("*").in_("sku", variants).execute().data
@@ -846,32 +742,16 @@ def _exact_sku(supabase, skus: List[str]) -> List[Dict[str, Any]]:
 def _text_candidates(
     supabase, terms: List[str], limit: int = 200
 ) -> List[Dict[str, Any]]:
-    """
-    Text search across:
-      - search_blob
-      - title
-      - description
-      - type
-      - sku
-
-    This is intentionally broad because product data may store compatibility
-    in different fields.
-    """
     cleaned = []
-
     for t in terms or []:
         t = _clean_search_term(t)
-
         if len(t) >= 2:
             cleaned.append(t)
-
     cleaned = list(dict.fromkeys(cleaned))[:8]
-
     if not cleaned:
         return []
 
     ors = []
-
     for t in cleaned:
         ors.extend(
             [
@@ -882,7 +762,6 @@ def _text_candidates(
                 f"sku.ilike.*{t}*",
             ]
         )
-
     try:
         rows = (
             supabase.table("products")
@@ -893,10 +772,8 @@ def _text_candidates(
             .data
             or []
         )
-
         logger.info("text candidates terms=%s rows=%s", cleaned, len(rows))
         return rows
-
     except Exception as e:
         logger.warning("text candidate query failed: %s", e)
         return []
@@ -908,24 +785,19 @@ def _semantic(
     try:
         emb = (
             openai_client.embeddings.create(
-                model=EMBED_MODEL,
-                dimensions=EMBED_DIMS,
-                input=query,
+                model=EMBED_MODEL, dimensions=EMBED_DIMS, input=query
             )
             .data[0]
             .embedding
         )
-
         rows = (
             supabase.rpc("match_products", {"query_embedding": emb, "match_count": k})
             .execute()
             .data
             or []
         )
-
         logger.info("semantic candidates rows=%s", len(rows))
         return rows
-
     except Exception as e:
         logger.warning("semantic search failed: %s", e)
         return []
@@ -936,9 +808,7 @@ def _semantic(
 # ---------------------------------------------------------------------------
 
 
-def _row(
-    product: Dict[str, Any], reason: str, web_verified: bool, confidence_level: int
-) -> Dict[str, Any]:
+def _row(product, reason, web_verified, confidence_level) -> Dict[str, Any]:
     return {
         "title": product.get("title", "") or "",
         "sku": product.get("sku", "") or "",
@@ -957,11 +827,48 @@ def _row(
     }
 
 
-def _no_matches_response(
-    query: str, interpretation: Dict[str, Any], web_used: bool
-) -> Dict[str, Any]:
+def _grounded_reply(openai_client, query: str, results: List[Dict[str, Any]]) -> str:
+    """One or two friendly sentences so the chat actually talks back."""
+    if not results:
+        return ""
+    context = "\n".join(
+        f"- {r['title']} (SKU {r['sku']}, ${r['price']:.2f}, "
+        f"{'in stock' if r['inventory'] > 0 else 'out of stock'})"
+        for r in results[:3]
+    )
+    try:
+        resp = openai_client.chat.completions.create(
+            model=CHAT_MODEL,
+            temperature=0.3,
+            max_tokens=120,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a Branson tractor parts assistant for varnerparts.com. In 1-2 "
+                    "friendly sentences, summarize what you found. Name the top part and say "
+                    "whether it's in stock. Never invent parts or SKUs not in the list.",
+                },
+                {
+                    "role": "user",
+                    "content": f"Customer asked: {query}\n\nTop matches:\n{context}",
+                },
+            ],
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        logger.warning("grounded reply failed: %s", e)
+        t = results[0]
+        return (
+            f"Closest match: {t['title']} (SKU {t['sku']}), "
+            f"{'in stock' if t['inventory'] > 0 else 'out of stock'}."
+        )
+
+
+def _no_matches_response(query, interpretation, web_used) -> Dict[str, Any]:
     return {
         "query": query,
+        "response": "I couldn't find a confident match for that. Try the model number, "
+        "a different part name, or paste a SKU.",
         "results": [],
         "search_confidence": 0,
         "web_search_used": web_used,
@@ -1003,18 +910,13 @@ def answer_query(
             "suggestions": ["Browse parts", "Search by model", "Contact us"],
         }
 
-    # -----------------------------------------------------------------------
-    # 1) Interpret query
-    # -----------------------------------------------------------------------
+    # 1) Interpret -----------------------------------------------------------
     interp = interpret_query_branson(openai_client, query)
-
     model = _safe_str(interp.get("model"))
     part_type = _safe_str(interp.get("part_type")) or "unknown"
     is_series = bool(interp.get("is_series"))
 
-    # Strong rule: user exact model beats LLM series mistake.
     literal_model = _literal_model_from_query(query)
-
     if literal_model:
         model = literal_model
         is_series = False
@@ -1024,22 +926,24 @@ def answer_query(
 
     specific_sku = interp.get("specific_sku")
     all_part_numbers = interp.get("all_part_numbers") or []
-
     user_skus = _dedupe_upper(
         ([specific_sku] if specific_sku else [])
         + all_part_numbers
         + extract_skus(query)
     )
 
-    # -----------------------------------------------------------------------
-    # 2) Optional web verification
-    # -----------------------------------------------------------------------
+    # 2) Web verification (store-first, clean query) -------------------------
     web_sources, web_part_numbers, web_used = [], [], False
     low_conf = interp.get("confidence") != "high"
+    have_user_sku = bool(user_skus)
+    # Verify whenever it can help: low confidence, a series query, OR a part-type
+    # search where the user didn't already give us a SKU. (Restores old behavior
+    # without firing on pure SKU lookups.)
+    want_web = low_conf or is_series or (part_type != "unknown" and not have_user_sku)
 
-    if use_web_search and SERPER_API_KEY and (low_conf or is_series):
-        wr = web_search_serper(query)
-
+    if use_web_search and SERPER_API_KEY and want_web:
+        web_query = _build_web_query(model, part_type, is_series, query)
+        wr = web_search_serper(web_query)
         if wr:
             web_used = True
             web_sources = [
@@ -1052,24 +956,20 @@ def answer_query(
             ]
             web_part_numbers = extract_part_numbers_from_web(wr)
 
-    # -----------------------------------------------------------------------
-    # 3) Candidate gathering
-    # -----------------------------------------------------------------------
+    # 3) Candidate gathering -------------------------------------------------
     web_hit_rows = _exact_sku(supabase, web_part_numbers)
     user_hit_rows = _exact_sku(supabase, user_skus)
-
-    common_skus = []
-    if part_type and part_type != "unknown":
-        common_skus = COMMON_BRANSON_PARTS.get(part_type.lower(), [])
-
+    common_skus = (
+        COMMON_BRANSON_PARTS.get(part_type.lower(), [])
+        if part_type != "unknown"
+        else []
+    )
     common_hit_rows = _exact_sku(supabase, common_skus)
 
     model_terms = []
-
     if model:
         if is_series:
             prefix = _series_prefix_from_text(model)
-
             if prefix:
                 model_terms.extend(SERIES_MAP.get(prefix, []))
                 model_terms.append(prefix)
@@ -1078,24 +978,18 @@ def answer_query(
                 model_terms.append(model)
         else:
             model_terms.append(model)
-
-            # Useful phrase search
             if not model.lower().startswith("branson"):
                 model_terms.append(f"Branson {model}")
 
     part_terms = []
-
     if part_type and part_type != "unknown":
         part_terms.append(part_type)
-
     for term in interp.get("search_terms") or []:
         cleaned = _clean_search_term(term)
         if cleaned and cleaned.lower() not in {"branson", "tractor", "series"}:
             part_terms.append(cleaned)
 
-    # Include SKU text terms too, in case SKU exists in title/description/search_blob instead of sku.
     text_terms = model_terms + part_terms + user_skus + web_part_numbers
-
     text_hit_rows = _text_candidates(supabase, text_terms)
     semantic_rows = _semantic(supabase, openai_client, query)
 
@@ -1110,14 +1004,11 @@ def answer_query(
 
     candidates, seen = [], set()
 
-    def add(rows: List[Dict[str, Any]]):
+    def add(rows):
         for p in rows or []:
             pid = p.get("id")
-
             if pid is None:
-                # Very rare fallback if id is missing.
                 pid = f"{p.get('sku', '')}|{p.get('title', '')}"
-
             if pid not in seen:
                 seen.add(pid)
                 candidates.append(p)
@@ -1134,11 +1025,8 @@ def answer_query(
     user_ids = {p.get("id") for p in user_hit_rows}
     common_ids = {p.get("id") for p in common_hit_rows}
 
-    # -----------------------------------------------------------------------
-    # 4) Score and validate
-    # -----------------------------------------------------------------------
+    # 4) Score and validate --------------------------------------------------
     matches = []
-
     for p in candidates:
         pid = p.get("id")
         title = (p.get("title") or "").lower()
@@ -1149,15 +1037,10 @@ def answer_query(
         reasons = []
 
         pt_score, pt_valid = 0, True
-
         if part_type and part_type != "unknown":
             pt_score, pt_valid = validate_part_type_match(
-                part_type,
-                title,
-                ptype,
-                haystack,
+                part_type, title, ptype, haystack
             )
-
             if not pt_valid:
                 logger.info(
                     "reject wrong part type: sku=%s title=%s requested=%s",
@@ -1174,17 +1057,14 @@ def answer_query(
         if is_web:
             score += 5000
             reasons.append("🌐 Web-verified")
-
         if is_user:
             score += 3500
             reasons.append("🎯 SKU match")
-
         if is_common:
             score += 1800
             reasons.append("✓ Common Branson part")
 
         score += pt_score
-
         if pt_score >= 2000:
             reasons.append(f"✓ Exact {part_type}")
         elif pt_score >= 1200:
@@ -1193,16 +1073,13 @@ def answer_query(
             reasons.append(f"~ Possible {part_type}")
 
         model_score = 0
-
         if model:
             if is_series:
                 prefix = _series_prefix_from_text(model)
                 series_models = SERIES_MAP.get(prefix, []) if prefix else []
-
                 if any(_contains_model(haystack, m) for m in series_models):
                     model_score = 900
                     reasons.append(f"✓ {model}")
-
                 elif prefix and re.search(
                     rf"\b{re.escape(prefix)}\s*series\b", haystack
                 ):
@@ -1212,35 +1089,29 @@ def answer_query(
                 if _contains_model(haystack, model):
                     model_score = 1000
                     reasons.append(f"✓ Model {model}")
-
         score += model_score
 
-        # Semantic similarity from RPC, if present.
+        # Stronger semantic weighting so good vector matches surface.
         similarity = p.get("similarity")
         if similarity is not None:
             try:
                 sim = float(similarity)
-                if sim >= 0.80:
-                    score += 500
+                if sim >= 0.82:
+                    score += 1100
+                    reasons.append("✓ Strong semantic match")
+                elif sim >= 0.72:
+                    score += 700
                     reasons.append("✓ Semantic match")
-                elif sim >= 0.70:
-                    score += 250
+                elif sim >= 0.62:
+                    score += 350
             except Exception:
                 pass
 
-        # If SKU was directly requested/found, exact SKU match should be enough.
-        # If not, require at least some part/model/text confidence.
         if score >= 500:
             conf = calculate_match_confidence(
                 score, is_web, is_user, pt_score, model_score
             )
-
-            row = _row(
-                p,
-                " | ".join(reasons[:5]) or "Related match",
-                is_web,
-                conf,
-            )
+            row = _row(p, " | ".join(reasons[:5]) or "Related match", is_web, conf)
             row["match_score"] = score
             matches.append(row)
 
@@ -1255,12 +1126,11 @@ def answer_query(
 
     if not matches:
         logger.info(
-            "no matches after scoring query=%s model=%s part_type=%s user_skus=%s text_terms=%s",
+            "no matches after scoring query=%s model=%s part_type=%s user_skus=%s",
             query,
             model,
             part_type,
             user_skus,
-            text_terms,
         )
         return _no_matches_response(query, interpretation, web_used)
 
@@ -1275,12 +1145,15 @@ def answer_query(
     count = 1 if overall >= 90 else 3 if overall >= 70 else 5
     results = matches[:count]
 
+    reply = _grounded_reply(openai_client, query, results)
+
     for r in results:
         r.pop("match_score", None)
         r.pop("confidence_level", None)
 
     return {
         "query": query,
+        "response": reply,
         "results": results,
         "search_confidence": overall,
         "web_search_used": web_used,
