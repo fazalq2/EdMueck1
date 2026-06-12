@@ -1210,46 +1210,73 @@ def answer_query(
             score += 1800
             reasons.append("✓ Common Branson part")
 
-        score += pt_score
+        # PART TYPE is the PRIMARY signal. Whether a product fits the named model
+        # is only a tiebreaker AMONG products that are actually the right part.
+        # Weighting part type ~2x stops a random "2400 <something>" outranking an
+        # actual glow plug just because the customer also mentioned 2400.
+        part_type_requested = bool(part_type and part_type != "unknown")
+        # A "real" part match means exact(2000)/related(1200)/base-word(800).
+        # A soft pass (200/500) just means "not excluded" — NOT the right part.
+        strong_part_match = pt_score >= 800
+
+        score += pt_score * 2
         if pt_score >= 2000:
             reasons.append(f"✓ Exact {part_type}")
         elif pt_score >= 1200:
             reasons.append(f"✓ Related {part_type}")
-        elif pt_score >= 500:
-            reasons.append(f"~ Possible {part_type}")
+        elif pt_score >= 800:
+            reasons.append(f"~ {part_type}")
 
+        # Compute the raw model-fit score (prefer the tags array — most reliable).
         model_score = 0
         if model:
+            tags_list = [str(t).lower() for t in (p.get("tags") or [])]
             if is_series:
                 prefix = _series_prefix_from_text(model)
                 series_models = SERIES_MAP.get(prefix, []) if prefix else []
-                if any(_contains_model(haystack, m) for m in series_models):
-                    model_score = 900
-                    reasons.append(f"✓ {model}")
-                elif prefix and re.search(
-                    rf"\b{re.escape(prefix)}\s*series\b", haystack
-                ):
-                    model_score = 800
-                    reasons.append(f"✓ {prefix} Series")
-            else:
-                if _contains_model(haystack, model):
+                if any(any(m.lower() in tag for tag in tags_list) for m in series_models):
                     model_score = 1000
-                    reasons.append(f"✓ Model {model}")
-        score += model_score
+                elif any(_contains_model(haystack, m) for m in series_models):
+                    model_score = 900
+                elif prefix and re.search(rf"\b{re.escape(prefix)}\s*series\b", haystack):
+                    model_score = 800
+            else:
+                ml = model.lower()
+                if any(ml in tag for tag in tags_list):
+                    model_score = 1000
+                elif _contains_model(haystack, model):
+                    model_score = 900
 
-        # Stronger semantic weighting so good vector matches surface.
+        # GATE: the model bonus only counts for products that ARE the requested
+        # part. A 2400 seat should NOT beat a glow plug just for being a 2400 part.
+        if model_score:
+            if not part_type_requested or strong_part_match:
+                score += model_score
+                reasons.append(f"✓ fits {model}")
+            else:
+                score += 100  # token fit credit; never enough to dominate
+
+        # Semantic weighting. When the customer named a part type but THIS product
+        # isn't that part, discount semantic heavily — the model number in the
+        # query otherwise inflates the similarity of wrong-part products.
         similarity = p.get("similarity")
         if similarity is not None:
             try:
                 sim = float(similarity)
                 if sim >= 0.82:
-                    score += 1100
-                    reasons.append("✓ Strong semantic match")
+                    base_sem = 1100
                 elif sim >= 0.72:
-                    score += 700
-                    reasons.append("✓ Semantic match")
+                    base_sem = 700
                 elif sim >= 0.62:
-                    score += 350
+                    base_sem = 350
+                else:
+                    base_sem = 0
+                if part_type_requested and not strong_part_match:
+                    base_sem = int(base_sem * 0.3)
+                if base_sem:
+                    score += base_sem
+                    if base_sem >= 700:
+                        reasons.append("✓ Semantic match")
             except Exception:
                 pass
 
